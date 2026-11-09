@@ -1,0 +1,49 @@
+x-env: &env
+  DATABASE_URL: mysql+pymysql://root:root@db:3306/churn
+
+services:
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: churn
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 5s
+      retries: 30
+    volumes: [db_data:/var/lib/mysql]
+
+  init:            # trains model, loads customers, seeds events only when table is empty
+    build: .
+    command: sh -c "python -m src.train && python -c 'from src import bootstrap; bootstrap.ensure_ready()'"
+    environment: *env
+    volumes: ["./models:/app/models"]
+    depends_on:
+      db: {condition: service_healthy}
+
+  simulator:       # streams live events
+    build: .
+    command: python -m src.simulator --interval 3
+    environment: *env
+    depends_on:
+      init: {condition: service_completed_successfully}
+
+  api:
+    build: .
+    command: uvicorn src.api:app --host 0.0.0.0 --port 8000
+    environment: *env
+    volumes: ["./models:/app/models"]
+    ports: ["8000:8000"]
+    depends_on:
+      init: {condition: service_completed_successfully}
+
+  dashboard:
+    build: .
+    environment: *env
+    volumes: ["./models:/app/models"]
+    ports: ["8501:8501"]
+    depends_on:
+      init: {condition: service_completed_successfully}
+
+volumes:
+  db_data:
